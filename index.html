@@ -31,6 +31,18 @@ button:disabled{opacity:.4}
 label{font-size:13px;color:var(--sub)}select{width:100%;padding:10px;border-radius:8px;margin:6px 0 12px;background:#0f172a;color:var(--text);border:1px solid #334155}
 .history{font-size:13px;color:var(--sub);line-height:1.8}
 details{font-size:12px;color:var(--sub)}
+.pill{display:inline-block;padding:3px 10px;border-radius:999px;font-size:12px;font-weight:700;background:#334155;color:var(--text)}
+.pill.run{background:#14532d;color:#86efac}.pill.live{background:#166534;color:#fff}.pill.stale{background:#713f12;color:#fde68a}.pill.err{background:#7f1d1d;color:#fecaca}.pill.demo{background:#4c1d95;color:#ddd6fe}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#64748b;margin-right:6px;vertical-align:middle}
+.dot.run{background:var(--green);animation:pulse 1.2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+.stats{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+.stat{background:#0f172a;border-radius:10px;padding:10px}
+.stat .v{font-size:20px;font-weight:800;line-height:1.2}.stat .k{font-size:11px;color:var(--sub)}
+.barwrap{height:10px;background:#0f172a;border-radius:999px;overflow:hidden;margin-top:6px}
+.barfill{height:100%;width:0%;background:var(--green);border-radius:999px;transition:width .3s}
+.events{font-size:12px;color:var(--sub);line-height:1.9;margin-top:10px;word-break:break-all}
+.hint{font-size:12px;color:#fde68a;margin-top:8px;line-height:1.6}
 </style>
 </head>
 <body>
@@ -59,6 +71,25 @@ iOSのSafari・Chrome（どちらもWebKit）には Web Bluetooth が無く、�
     <div class="signal"><div id="lampNS" class="lamp"></div><div>南北</div><div id="labelNS">—</div><div id="remNS" class="mono"></div></div>
   </div>
   <div id="history" class="history" style="margin-top:12px"></div>
+</div>
+
+<div class="card" id="progressCard">
+  <div style="display:flex;justify-content:space-between;align-items:center">
+    <strong><span id="pDot" class="dot"></span>スキャン進捗</strong>
+    <span id="pState" class="pill">停止中</span>
+  </div>
+  <div class="barwrap"><div id="pFresh" class="barfill"></div></div>
+  <div class="mono" id="pFreshLabel">最終PICS受信: まだありません（鮮度バーは受信後5秒で空になります）</div>
+  <div class="stats">
+    <div class="stat"><div class="v" id="pElapsed">00:00</div><div class="k">経過時間</div></div>
+    <div class="stat"><div class="v" id="pRate">—</div><div class="k">PICS受信ペース（件/分・目安）</div></div>
+    <div class="stat"><div class="v" id="pAll">0</div><div class="k">全アドバタイズ受信</div></div>
+    <div class="stat"><div class="v" id="pPics">0</div><div class="k">PICS受信（0x01CE）</div></div>
+    <div class="stat"><div class="v" id="pLastAdv">—</div><div class="k">最終受信（全般）</div></div>
+    <div class="stat"><div class="v" id="pLastPics">—</div><div class="k">最終PICS受信</div></div>
+  </div>
+  <div id="pHint" class="hint"></div>
+  <div id="pEvents" class="events">直近の受信イベントはここに出ます</div>
 </div>
 
 <div class="card">
@@ -96,6 +127,64 @@ if(!hasScan && !hasWatch) $('btnScan').disabled = true;
 
 let scan=null, watcherAbort=null, demoTimer=null, step=0, history=[], lastSignal=null, intersections=new Map(), currentId=null;
 
+// ===== スキャン進捗 =====
+let scanStartedAt=null, stoppedElapsed=0, lastAdvAt=null, lastPicsAt=null, progressTimer=null, eventLog=[], scanKind='';
+const fmtElapsed = ms => { const s=Math.floor(ms/1000); return String(Math.floor(s/60)).padStart(2,'0')+':'+String(s%60).padStart(2,'0'); };
+const agoText = t => t==null ? '—' : (Math.max(0,(Date.now()-t)/1000)).toFixed(1)+'秒前';
+function setPill(state){
+  const pill=$('pState'); const map={idle:['停止中','pill'],requesting:['許可待ち','pill stale'],scanning:['スキャン中','pill run'],live:['受信中','pill live'],stale:['途切れています','pill stale'],demo:['デモ中','pill demo'],error:['エラー','pill err']};
+  const [label,cls]=map[state]||map.idle; pill.textContent=label; pill.className=cls;
+  $('pDot').className='dot'+((state==='scanning'||state==='live'||state==='demo')?' run':'');
+}
+function pushEvent(text){
+  eventLog.unshift(`${new Date().toLocaleTimeString()} ${text}`); eventLog=eventLog.slice(0,5);
+  $('pEvents').innerHTML = eventLog.join('<br>');
+}
+function updateProgress(){
+  const elapsed = scanStartedAt ? (Date.now()-scanStartedAt) : stoppedElapsed;
+  $('pElapsed').textContent = fmtElapsed(elapsed);
+  $('pAll').textContent = advCount; $('pPics').textContent = picsCount;
+  $('pLastAdv').textContent = agoText(lastAdvAt); $('pLastPics').textContent = agoText(lastPicsAt);
+  const mins = elapsed/60000; $('pRate').textContent = (picsCount>0 && mins>0) ? Math.round(picsCount/mins) : '—';
+  const fresh = lastPicsAt ? Math.max(0, 1-(Date.now()-lastPicsAt)/5000) : 0;
+  const bar=$('pFresh'); bar.style.width=(fresh*100)+'%'; bar.style.background = fresh>0.5 ? 'var(--green)' : fresh>0 ? '#eab308' : '#334155';
+  $('pFreshLabel').textContent = lastPicsAt ? `最終PICS受信: ${agoText(lastPicsAt)}` : '最終PICS受信: まだありません（鮮度バーは受信後5秒で空になります）';
+  let hint='';
+  if(scanStartedAt && scanKind!=='demo'){
+    if(picsCount===0 && elapsed>10000) hint='10秒以上PICSを受信できていません。PICS設置交差点の近くか、Bluefyの「Enable BLE Advertisements」がONか、選んだ機器がPICS機器かを確認してください。';
+    else if(picsCount===0 && advCount>0) hint='BLE自体は受信できていますが、PICS（0x01CE）はまだ来ていません。選んだ機器が違う可能性があります。';
+    else if(lastPicsAt && Date.now()-lastPicsAt>5000) hint='PICSの受信が5秒以上途切れています。信号機から離れていないか確認してください。';
+  }
+  $('pHint').textContent = hint;
+  if(scanStartedAt && scanKind!=='demo'){
+    if(lastPicsAt && Date.now()-lastPicsAt<=5000) setPill('live');
+    else if(lastPicsAt) setPill('stale');
+    else setPill('scanning');
+  }
+}
+function startProgress(kind){
+  scanKind=kind; scanStartedAt=Date.now(); stoppedElapsed=0; lastAdvAt=null; lastPicsAt=null; eventLog=[];
+  $('pEvents').textContent='直近の受信イベントはここに出ます';
+  setPill(kind==='demo'?'demo':'requesting'); updateProgress();
+  if(progressTimer) clearInterval(progressTimer);
+  progressTimer=setInterval(updateProgress,250);
+}
+function stopProgress(state='idle'){
+  if(scanStartedAt) stoppedElapsed=Date.now()-scanStartedAt;
+  scanStartedAt=null; scanKind='';
+  if(progressTimer){clearInterval(progressTimer); progressTimer=null;}
+  setPill(state); updateProgress();
+}
+function noteAdvertisement(event){
+  lastAdvAt=Date.now();
+  const data = event.manufacturerData?.get(MANUFACTURER_ID);
+  if(data) lastPicsAt=Date.now();
+}
+function noteDemoPics(){
+  advCount++; picsCount++; lastAdvAt=Date.now(); lastPicsAt=Date.now();
+  pushEvent('デモ: PICS Type2（信号）を受信'); updateProgress();
+}
+
 function render(info, rssi){
   if(info.intersection_id) currentId = info.intersection_id;
   const prev = intersections.get(currentId)||{};
@@ -126,12 +215,15 @@ function onAdvCounted(event){
   advCount++;
   const hasPics = !!event.manufacturerData?.get(MANUFACTURER_ID);
   if(hasPics) picsCount++;
+  noteAdvertisement(event);
   const keys = event.manufacturerData ? Array.from(event.manufacturerData.keys()).map(k=>'0x'+k.toString(16).toUpperCase().padStart(4,'0')).join(',') : '';
+  pushEvent(`${hasPics?'PICS受信':'BLE受信'} メーカーID: ${keys||'なし'} / RSSI ${event.rssi ?? '—'}`);
   $('status').textContent = `受信中: 全${advCount}件 / PICS(0x01CE) ${picsCount}件 / 直近メーカーID: ${keys||'なし'} / RSSI ${event.rssi ?? '—'}`;
+  updateProgress();
   _origOnAdv(event);
 }
 async function startScan(){
-  $('btnScan').disabled=true; $('btnStop').disabled=false; $('status').textContent='許可を要求中…'; advCount=0; picsCount=0;
+  $('btnScan').disabled=true; $('btnStop').disabled=false; $('status').textContent='許可を要求中…'; advCount=0; picsCount=0; startProgress('scan');
   const mode = $('mode').value;
   try{
     // Bluefy newer API: navigator.bluetooth.watchAdvertisements() - surrounding devices without picker
@@ -166,14 +258,17 @@ async function startScan(){
   }catch(e){ $('status').textContent='開始できませんでした: '+e.name+' '+e.message; stopAll(); }
 }
 function stopAll(){
+  const wasRunning = !!scanStartedAt;
   scan?.stop(); scan=null; watcherAbort?.abort(); watcherAbort=null;
   if(demoTimer){clearInterval(demoTimer); demoTimer=null;}
   navigator.bluetooth?.removeEventListener('advertisementreceived', onAdv); navigator.bluetooth?.removeEventListener('advertisementreceived', onAdvCounted); if(typeof navigator.bluetooth?.unwatchAdvertisements==='function'){ try{navigator.bluetooth.unwatchAdvertisements()}catch{} }
   $('btnScan').disabled = !(hasScan||hasWatch); $('btnStop').disabled=true; $('status').textContent='停止中';
+  if(wasRunning || progressTimer) stopProgress('idle');
 }
 $('btnScan').onclick=startScan; $('btnStop').onclick=stopAll;
-$('btnDemo').onclick=()=>{ stopAll(); $('btnStop').disabled=false; $('status').textContent='デモ中（実機受信ではありません）';
-  demoTimer=setInterval(()=>{ for(const p of demoPackets(step)) render(processPics(p)); step++; },1000); for(const p of demoPackets(step)) render(processPics(p)); step++; };
+$('btnDemo').onclick=()=>{ stopAll(); advCount=0; picsCount=0; startProgress('demo'); $('btnStop').disabled=false; $('status').textContent='デモ中（実機受信ではありません）';
+  const tick=()=>{ for(const p of demoPackets(step)) render(processPics(p)); noteDemoPics(); step++; };
+  demoTimer=setInterval(tick,1000); tick(); };
 document.addEventListener('visibilitychange',()=>{ if(document.hidden) stopAll(); });
 
 // PWA install
