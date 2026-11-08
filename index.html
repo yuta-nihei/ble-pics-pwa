@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>PICS Viewer — 信号BLE</title>
+<meta name="description" content="高度化PICS（歩行者等支援情報通信システム）のBLEアドバタイズを受信して歩行者信号を表示するPWA">
+<meta name="theme-color" content="#0f172a">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="PICS Viewer">
+<link rel="apple-touch-icon" href="icons/icon.svg">
+<link rel="icon" href="icons/icon.svg">
+<style>
+:root{--bg:#0f172a;--card:#1e293b;--text:#f1f5f9;--sub:#94a3b8;--green:#22c55e;--red:#ef4444;--accent:#38bdf8}
+*{box-sizing:border-box}body{margin:0;font-family:system-ui,-apple-system,"Hiragino Sans",sans-serif;background:var(--bg);color:var(--text);padding:16px;padding-top:max(16px,env(safe-area-inset-top))}
+h1{font-size:20px;margin:0 0 4px}p.sub{color:var(--sub);font-size:13px;margin:0 0 16px;line-height:1.6}
+.card{background:var(--card);border-radius:16px;padding:16px;margin-bottom:12px}
+.signals{display:flex;gap:12px}.signal{flex:1;text-align:center;background:#0f172a;border-radius:12px;padding:16px 8px}
+.lamp{width:72px;height:72px;border-radius:50%;margin:0 auto 8px;background:#334155;transition:.3s}
+.lamp.Red{background:var(--red);box-shadow:0 0 24px #ef444488}.lamp.Green{background:var(--green);box-shadow:0 0 24px #22c55e88}
+.lamp.BlinkGreen{background:var(--green);box-shadow:0 0 24px #22c55e88;animation:blink 0.8s steps(2,start) infinite}
+@keyframes blink{to{visibility:hidden}}
+button{width:100%;padding:14px;border:0;border-radius:12px;font-size:16px;font-weight:700;margin-bottom:8px}
+.primary{background:var(--accent);color:#082f49}.secondary{background:#334155;color:var(--text)}.danger{background:#7f1d1d;color:#fff}
+button:disabled{opacity:.4}
+.notice{font-size:13px;line-height:1.7;color:#fde68a;background:#451a03;border:1px solid #92400e;padding:12px;border-radius:12px;margin-bottom:12px}
+.ok{color:#86efac}.mono{font-family:ui-monospace,monospace;font-size:11px;word-break:break-all;color:var(--sub)}
+label{font-size:13px;color:var(--sub)}select{width:100%;padding:10px;border-radius:8px;margin:6px 0 12px;background:#0f172a;color:var(--text);border:1px solid #334155}
+.history{font-size:13px;color:var(--sub);line-height:1.8}
+details{font-size:12px;color:var(--sub)}
+</style>
+</head>
+<body>
+<h1>🚦 PICS Viewer</h1>
+<p class="sub">高度化PICS のBLE信号（メーカーID 0x01CE）を受信して、歩行者信号をリアルタイム表示します。受信専用です。実際の横断は現地の信号を見て判断してください。</p>
+
+<div id="iosNotice" class="notice" hidden>
+<b>iPhone / Safariでは実機受信できません。</b><br>
+iOSのSafari・Chrome（どちらもWebKit）には Web Bluetooth が無く、ホーム画面に追加したPWAでもBLEスキャンはできません。<br>
+・画面確認だけなら下の「デモを試す」が使えます<br>
+・iPhoneで実機受信したい場合は、Web Bluetooth対応ブラウザ <b>Bluefy</b> でこのページを開くか、先に作ったネイティブ版（Swift）が必要です<br>
+・Android / Windows / Mac の Chrome では、実験フラグ有効化で実機受信できる場合があります
+</div>
+<div id="bluefyNotice" class="notice" hidden>
+<b>Bluefyで開いています。</b> このまま使えます。始める前に Bluefy の設定で <b>「Enable BLE Advertisements」をON</b> にして、Bluefyを再起動してください。そのあと受信方式は「Bluefy（デバイスを選んで監視）」のまま「スキャン開始」を押してください。PICS機器は名前が出ないことがあるので、選択画面では信号機らしき機器／不明なデバイスを選んでください。
+</div>
+<div id="supportBox" class="card"><div id="support">対応状況を確認中…</div></div>
+
+<div class="card">
+  <div style="display:flex;justify-content:space-between;align-items:baseline">
+    <strong id="intersection">交差点: —</strong><span id="rssi" class="mono"></span>
+  </div>
+  <div id="meta" class="mono" style="margin:6px 0 12px">受信待ち</div>
+  <div class="signals">
+    <div class="signal"><div id="lampEW" class="lamp"></div><div>東西</div><div id="labelEW">—</div><div id="remEW" class="mono"></div></div>
+    <div class="signal"><div id="lampNS" class="lamp"></div><div>南北</div><div id="labelNS">—</div><div id="remNS" class="mono"></div></div>
+  </div>
+  <div id="history" class="history" style="margin-top:12px"></div>
+</div>
+
+<div class="card">
+  <label>受信方式
+    <select id="mode">
+      <option value="bluefy">Bluefy（デバイスを選んで監視・メーカーIDフィルタなし）</option>
+      <option value="scan">周囲をまとめてスキャン（requestLEScan）</option>
+      <option value="watch">デバイスを選んで監視（watchAdvertisements）</option>
+    </select>
+  </label>
+  <button id="btnScan" class="primary">スキャン開始</button>
+  <button id="btnDemo" class="secondary">デモを試す（Bluetooth不要）</button>
+  <button id="btnStop" class="danger" disabled>停止</button>
+  <button id="btnInstall" class="secondary" hidden>ホーム画面に追加（インストール）</button>
+  <div id="status" class="mono">停止中</div>
+</div>
+
+<div class="card"><details><summary>解析結果 / 生データ</summary><pre id="raw" class="mono">—</pre></details></div>
+<p class="mono">出典: yumu19/ble-pics-viewer (MIT) の解析仕様を移植。PICS信号は不特定多数向けの公開BLEアドバタイズで、受信専用です。</p>
+
+<script type="module">
+import { MANUFACTURER_ID, processPics, hexDump, SIGNAL_LABELS, demoPackets } from './pics.mjs';
+
+const $ = id => document.getElementById(id);
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1);
+const hasBT = !!navigator.bluetooth;
+const hasScan = hasBT && typeof navigator.bluetooth.requestLEScan === 'function';
+const hasWatch = hasBT && typeof navigator.bluetooth.requestDevice === 'function';
+const isBluefyLike = hasBT && (isIOS || /Bluefy/i.test(navigator.userAgent));
+if(isIOS && !hasBT) $('iosNotice').hidden = false;
+if(isBluefyLike){ $('bluefyNotice').hidden = false; $('mode').value = 'bluefy'; }
+else if(hasScan){ $('mode').value = 'scan'; } else if(hasWatch){ $('mode').value = 'watch'; }
+$('support').innerHTML = `Web Bluetooth: ${hasBT?'<span class="ok">あり</span>':'なし'} / requestLEScan: ${hasScan?'<span class="ok">あり</span>':'なし'} / requestDevice: ${hasWatch?'<span class="ok">あり</span>':'なし'}<br><span class="mono">${navigator.userAgent}</span>`;
+if(!hasScan && !hasWatch) $('btnScan').disabled = true;
+
+let scan=null, watcherAbort=null, demoTimer=null, step=0, history=[], lastSignal=null, intersections=new Map(), currentId=null;
+
+function render(info, rssi){
+  if(info.intersection_id) currentId = info.intersection_id;
+  const prev = intersections.get(currentId)||{};
+  const merged = {...prev, ...info}; intersections.set(currentId, merged);
+  if(info.message_type===2){ lastSignal=info; history.push({t:new Date(), s:info.pedestrian_signals}); history=history.slice(-5); }
+  $('intersection').textContent = `交差点: ${merged.identifier || merged.intersection_id || '—'}`;
+  $('meta').textContent = `${merged.intersection_id||''} ${merged.latitude?`📍${merged.latitude}, ${merged.longitude}`:''} 受信 ${new Date().toLocaleTimeString()}`;
+  if(rssi!=null) $('rssi').textContent = `${rssi} dBm`;
+  if(lastSignal){
+    const [ew,ns]=lastSignal.pedestrian_signals;
+    for(const [lamp,label,rem,s] of [['lampEW','labelEW','remEW',ew],['lampNS','labelNS','remNS',ns]]){
+      $(lamp).className='lamp '+s.signal_state; $(label).textContent=SIGNAL_LABELS[s.signal_state]||s.signal_state;
+      $(rem).textContent = s.remaining_time===-1?'残り —':`残り ${s.remaining_time}`;
+    }
+    $('history').innerHTML = history.slice().reverse().map(h=>`${h.t.toLocaleTimeString()} 東西:${SIGNAL_LABELS[h.s[0].signal_state]} / 南北:${SIGNAL_LABELS[h.s[1].signal_state]}`).join('<br>');
+  }
+  $('raw').textContent = JSON.stringify(merged,null,2);
+}
+function onAdv(event){
+  const data = event.manufacturerData?.get(MANUFACTURER_ID);
+  if(!data) return;
+  try{ const info=processPics(data); render(info, event.rssi); $('raw').textContent = hexDump(data)+'\n'+JSON.stringify(info,null,2); }
+  catch(e){ console.warn(e); }
+}
+let advCount=0, picsCount=0;
+const _origOnAdv = onAdv;
+function onAdvCounted(event){
+  advCount++;
+  const hasPics = !!event.manufacturerData?.get(MANUFACTURER_ID);
+  if(hasPics) picsCount++;
+  const keys = event.manufacturerData ? Array.from(event.manufacturerData.keys()).map(k=>'0x'+k.toString(16).toUpperCase().padStart(4,'0')).join(',') : '';
+  $('status').textContent = `受信中: 全${advCount}件 / PICS(0x01CE) ${picsCount}件 / 直近メーカーID: ${keys||'なし'} / RSSI ${event.rssi ?? '—'}`;
+  _origOnAdv(event);
+}
+async function startScan(){
+  $('btnScan').disabled=true; $('btnStop').disabled=false; $('status').textContent='許可を要求中…'; advCount=0; picsCount=0;
+  const mode = $('mode').value;
+  try{
+    // Bluefy newer API: navigator.bluetooth.watchAdvertisements() - surrounding devices without picker
+    if(mode==='bluefy' && typeof navigator.bluetooth.watchAdvertisements === 'function'){
+      navigator.bluetooth.addEventListener('advertisementreceived', onAdvCounted);
+      await navigator.bluetooth.watchAdvertisements();
+      $('status').textContent='監視中（bluetooth.watchAdvertisements / Bluefy）- PICS機器の近くでお待ちください';
+      return;
+    }
+    if(mode==='scan'){
+      navigator.bluetooth.addEventListener('advertisementreceived', onAdvCounted);
+      scan = await navigator.bluetooth.requestLEScan({acceptAllAdvertisements:true, keepRepeatedDevices:true});
+      $('status').textContent='スキャン中（requestLEScan）';
+    } else {
+      // Bluefy ignores / matches nothing with a manufacturerData filter, so do NOT use it there.
+      // Chrome watch mode keeps the filter; Bluefy mode uses acceptAllDevices + optionalManufacturerData only.
+      const options = (mode==='bluefy')
+        ? { acceptAllDevices:true, optionalManufacturerData:[MANUFACTURER_ID] }
+        : { filters:[{manufacturerData:[{companyIdentifier:MANUFACTURER_ID}]}], optionalManufacturerData:[MANUFACTURER_ID] };
+      let device;
+      try{ device = await navigator.bluetooth.requestDevice(options); }
+      catch(e){
+        if(mode!=='bluefy') throw e;
+        // Fallback if Bluefy build rejects optionalManufacturerData shape
+        device = await navigator.bluetooth.requestDevice({acceptAllDevices:true});
+      }
+      watcherAbort = new AbortController(); device.addEventListener('advertisementreceived', onAdvCounted);
+      if(typeof device.watchAdvertisements !== 'function') throw new DOMException('watchAdvertisements がありません。Bluefy設定で Enable BLE Advertisements をONにして再起動してください','NotSupportedError');
+      await device.watchAdvertisements({signal: watcherAbort.signal});
+      $('status').textContent='監視中（watchAdvertisements）- 選んだ機器の広告を待っています';
+    }
+  }catch(e){ $('status').textContent='開始できませんでした: '+e.name+' '+e.message; stopAll(); }
+}
+function stopAll(){
+  scan?.stop(); scan=null; watcherAbort?.abort(); watcherAbort=null;
+  if(demoTimer){clearInterval(demoTimer); demoTimer=null;}
+  navigator.bluetooth?.removeEventListener('advertisementreceived', onAdv); navigator.bluetooth?.removeEventListener('advertisementreceived', onAdvCounted); if(typeof navigator.bluetooth?.unwatchAdvertisements==='function'){ try{navigator.bluetooth.unwatchAdvertisements()}catch{} }
+  $('btnScan').disabled = !(hasScan||hasWatch); $('btnStop').disabled=true; $('status').textContent='停止中';
+}
+$('btnScan').onclick=startScan; $('btnStop').onclick=stopAll;
+$('btnDemo').onclick=()=>{ stopAll(); $('btnStop').disabled=false; $('status').textContent='デモ中（実機受信ではありません）';
+  demoTimer=setInterval(()=>{ for(const p of demoPackets(step)) render(processPics(p)); step++; },1000); for(const p of demoPackets(step)) render(processPics(p)); step++; };
+document.addEventListener('visibilitychange',()=>{ if(document.hidden) stopAll(); });
+
+// PWA install
+let deferred=null; window.addEventListener('beforeinstallprompt',e=>{e.preventDefault(); deferred=e; $('btnInstall').hidden=false;});
+$('btnInstall').onclick=async()=>{ if(deferred){deferred.prompt(); await deferred.userChoice; deferred=null; $('btnInstall').hidden=true;} else alert('ブラウザのメニューから「ホーム画面に追加」を選んでください'); };
+if('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(()=>{});
+</script>
+</body>
+</html>
