@@ -107,6 +107,17 @@ iOSのSafari・Chrome（どちらもWebKit）には Web Bluetooth が無く、�
   <div id="status" class="mono">停止中</div>
 </div>
 
+<div class="card">
+  <strong>📍 高度化PICSのある場所（沖縄は3か所だけ）</strong>
+  <p class="sub" style="margin-top:8px">沖縄県内の高度化PICSは、警察庁の一覧（令和7年5月1日現在）では那覇市の次の3か所のみです。これ以外の交差点では、設定が正しくても信号は表示されません。</p>
+  <div class="history">
+    ・<a style="color:var(--accent)" href="https://www.google.com/maps/search/?api=1&query=26.213655,127.680471">県庁北口交差点</a>（那覇市久茂地1-1-1）<br>
+    ・<a style="color:var(--accent)" href="https://www.google.com/maps/search/?api=1&query=26.216387,127.683781">牧志一丁目交差点</a>（那覇市牧志1-9-1）<br>
+    ・<a style="color:var(--accent)" href="https://www.google.com/maps/search/?api=1&query=26.21285,127.685391">視覚障害者福祉センター前横断路</a>（那覇市松尾2-15-29）
+  </div>
+  <p class="sub" style="margin-top:8px">全国の一覧は<a style="color:var(--accent)" href="https://www.npa.go.jp/bureau/traffic/seibi2/annzen-shisetu/utms/pics.html">警察庁「高度化PICS整備交差点」</a>で確認できます。信号機の近く（数m〜十数m）まで寄って試してください。</p>
+</div>
+
 <div class="card"><details><summary>解析結果 / 生データ</summary><pre id="raw" class="mono">—</pre></details></div>
 <p class="mono">出典: yumu19/ble-pics-viewer (MIT) の解析仕様を移植。PICS信号は不特定多数向けの公開BLEアドバタイズで、受信専用です。</p>
 
@@ -122,7 +133,8 @@ const isBluefyLike = hasBT && (isIOS || /Bluefy/i.test(navigator.userAgent));
 if(isIOS && !hasBT) $('iosNotice').hidden = false;
 if(isBluefyLike){ $('bluefyNotice').hidden = false; $('mode').value = 'bluefy'; }
 else if(hasScan){ $('mode').value = 'scan'; } else if(hasWatch){ $('mode').value = 'watch'; }
-$('support').innerHTML = `Web Bluetooth: ${hasBT?'<span class="ok">あり</span>':'なし'} / requestLEScan: ${hasScan?'<span class="ok">あり</span>':'なし'} / requestDevice: ${hasWatch?'<span class="ok">あり</span>':'なし'}<br><span class="mono">${navigator.userAgent}</span>`;
+const hasGlobalWatch = hasBT && typeof navigator.bluetooth.watchAdvertisements === 'function';
+$('support').innerHTML = `Web Bluetooth: ${hasBT?'<span class="ok">あり</span>':'なし'} / requestLEScan: ${hasScan?'<span class="ok">あり</span>':'なし'} / requestDevice: ${hasWatch?'<span class="ok">あり</span>':'なし'} / bluetooth.watchAdvertisements: ${hasGlobalWatch?'<span class="ok">あり（選択画面なしで周囲を聞けます）</span>':'なし（選択画面から1台選ぶ方式になります）'}<br><span class="mono">${navigator.userAgent}</span>`;
 if(!hasScan && !hasWatch) $('btnScan').disabled = true;
 
 let scan=null, watcherAbort=null, demoTimer=null, step=0, history=[], lastSignal=null, intersections=new Map(), currentId=null;
@@ -151,7 +163,7 @@ function updateProgress(){
   $('pFreshLabel').textContent = lastPicsAt ? `最終PICS受信: ${agoText(lastPicsAt)}` : '最終PICS受信: まだありません（鮮度バーは受信後5秒で空になります）';
   let hint='';
   if(scanStartedAt && scanKind!=='demo'){
-    if(picsCount===0 && elapsed>10000) hint='10秒以上PICSを受信できていません。PICS設置交差点の近くか、Bluefyの「Enable BLE Advertisements」がONか、選んだ機器がPICS機器かを確認してください。';
+    if(picsCount===0 && elapsed>10000) hint='10秒以上PICSを受信できていません。まず「PICSのある交差点」かどうかが最重要です（沖縄は那覇の3か所のみ）。そのうえで、Bluefyの「Enable BLE Advertisements」がONか、選んだ機器がPICS機器かを確認してください。選択画面に信号機らしい機器が一切出ない場合は、その画面に他のBLE機器（イヤホン等）が出るかも確認してください。';
     else if(picsCount===0 && advCount>0) hint='BLE自体は受信できていますが、PICS（0x01CE）はまだ来ていません。選んだ機器が違う可能性があります。';
     else if(lastPicsAt && Date.now()-lastPicsAt>5000) hint='PICSの受信が5秒以上途切れています。信号機から離れていないか確認してください。';
   }
@@ -255,7 +267,10 @@ async function startScan(){
       await device.watchAdvertisements({signal: watcherAbort.signal});
       $('status').textContent='監視中（watchAdvertisements）- 選んだ機器の広告を待っています';
     }
-  }catch(e){ $('status').textContent='開始できませんでした: '+e.name+' '+e.message; stopAll(); }
+  }catch(e){
+    const msg = '開始できませんでした: '+e.name+' '+e.message + (e.name==='NotFoundError' ? '（選択画面でキャンセルされたか、機器が見つかりませんでした。PICS交差点の近くで、信号機のそばに寄って再度お試しください）' : '');
+    stopAll(); $('status').textContent = msg; setPill('error'); pushEvent('エラー: '+e.name);
+  }
 }
 function stopAll(){
   const wasRunning = !!scanStartedAt;
